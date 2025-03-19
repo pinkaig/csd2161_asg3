@@ -1,0 +1,11 @@
+192.168.0.98
+9000
+9001
+9014
+.\
+20
+0.15
+/l
+/d 192.168.0.98:9014 WinSCP_Setup.exe
+/d 192.168.0.98:9014 reference_screenshot_jaguar.ppm
+/q

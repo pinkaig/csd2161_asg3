@@ -1,0 +1,11 @@
+﻿  client.cpp
+C:\csd2161_asg3\CSD2161-pinkai.g-3\Client_Project\Client_Project\client.cpp(27,1): error C4430: missing type specifier - int assumed. Note: C++ does not support default-int
+C:\csd2161_asg3\CSD2161-pinkai.g-3\Client_Project\Client_Project\client.cpp(27,12): error C2065: 'C': undeclared identifier
+C:\csd2161_asg3\CSD2161-pinkai.g-3\Client_Project\Client_Project\client.cpp(27,15): error C2059: syntax error: 'constant'
+C:\csd2161_asg3\CSD2161-pinkai.g-3\Client_Project\Client_Project\client.cpp(30,1): warning C4138: '*/' found outside of comment
+C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.43.34808\include\sal.h(2361,12): error C2143: syntax error: missing ';' before '{'
+  (compiling source file 'client.cpp')
+  
+C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.43.34808\include\sal.h(2361,12): error C2447: '{': missing function header (old-style formal list?)
+  (compiling source file 'client.cpp')
+  

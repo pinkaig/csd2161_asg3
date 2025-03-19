@@ -1,0 +1,8 @@
+﻿  server.cpp
+C:\csd2161_asg3\Assignment3\Server_Project\Server_Project\server.cpp(86,17): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
+C:\csd2161_asg3\Assignment3\Server_Project\Server_Project\server.cpp(100,37): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data
+C:\csd2161_asg3\Assignment3\Server_Project\Server_Project\server.cpp(292,3): error C2561: 'main': function must return a value
+      C:\csd2161_asg3\Assignment3\Server_Project\Server_Project\server.cpp(278,5):
+      see declaration of 'main'
+  
+C:\csd2161_asg3\Assignment3\Server_Project\Server_Project\server.cpp(629,38): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data
