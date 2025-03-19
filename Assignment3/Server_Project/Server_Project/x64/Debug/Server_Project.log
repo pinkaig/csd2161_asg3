@@ -1,5 +1,3 @@
 ﻿  server.cpp
-C:\csd2160_Computer_Network\Assignment3\Server_Project\Server_Project\server.cpp(591,60): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data
-C:\csd2160_Computer_Network\Assignment3\Server_Project\Server_Project\server.cpp(669,100): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data
-C:\csd2160_Computer_Network\Assignment3\Server_Project\Server_Project\server.cpp(754,100): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data
-  Server_Project.vcxproj -> C:\csd2160_Computer_Network\Assignment3\Server_Project\x64\Debug\Server_Project.exe
+C:\csd2161\csd2161_asg3\Assignment3\Server_Project\Server_Project\server.cpp(547,7): warning C4101: 'ipStr': unreferenced local variable
+  Server_Project.vcxproj -> C:\csd2161\csd2161_asg3\Assignment3\Server_Project\x64\Debug\Server_Project.exe

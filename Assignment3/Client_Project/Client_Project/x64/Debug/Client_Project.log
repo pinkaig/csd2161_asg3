@@ -1,2 +1,4 @@
 ﻿  client.cpp
-  Client_Project.vcxproj -> C:\csd2160_Computer_Network\Assignment3\Client_Project\x64\Debug\Client_Project.exe
+C:\csd2161\csd2161_asg3\Assignment3\Client_Project\Client_Project\client.cpp(133,41): warning C4101: 'ia': unreferenced local variable
+C:\csd2161\csd2161_asg3\Assignment3\Client_Project\Client_Project\client.cpp(136,37): warning C4101: 'oor': unreferenced local variable
+  Client_Project.vcxproj -> C:\csd2161\csd2161_asg3\Assignment3\Client_Project\x64\Debug\Client_Project.exe

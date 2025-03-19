@@ -24,7 +24,7 @@ prior written consent of DigiPen Institute of Technology is prohibited.
 #include "Windows.h"    // Entire Win32 API...
 #include "ws2tcpip.h"    // getaddrinfo()
 #include <thread>
-
+#include <mutex>
 #pragma comment(lib, "ws2_32.lib")
 
 #include <iostream>     // cout, cerr
@@ -38,13 +38,14 @@ std::size_t limit = 805000000;
 enum CMDID {
     UNKNOWN = (unsigned char)0x0,
     REQ_QUIT = (unsigned char)0x1,
-    REQ_ECHO = (unsigned char)0x2,
-    RSP_ECHO = (unsigned char)0x3,
-    REQ_LISTUSERS = (unsigned char)0x4,
-    RSP_LISTUSERS = (unsigned char)0x5,
+    REQ_DOWNLOAD = (unsigned char)0x2,
+    RSP_DOWNLOAD = (unsigned char)0x3,
+    REQ_LISTFILES = (unsigned char)0x4,
+    RSP_LISTFILES = (unsigned char)0x5,
     CMD_TEST = (unsigned char)0x20,
-    ECHO_ERROR = (unsigned char)0x30
+    DOWNLOAD_ERROR = (unsigned char)0x30
 };
+
 /**
  * @brief Parses the echo command input by the user.
  *
@@ -58,6 +59,54 @@ enum CMDID {
  * @param message Reference to a string where the extracted message will be stored.
  * @return true if the command was successfully parsed; false otherwise.
  */
+
+#define NET_BUF_SIZE 4096
+#define sendrecvflag 0
+std::mutex mtx; // Mutex for protecting shared resources
+char net_buf[NET_BUF_SIZE];
+void clearBuf(char* b) {
+    std::lock_guard<std::mutex> lock(mtx);
+    memset(b, '\0', NET_BUF_SIZE);
+}
+
+bool saveFile(FILE* fp, char* buf, int s) {
+    std::lock_guard<std::mutex> lock(mtx);
+    for (int i = 0; i < s; i++) {
+        char ch = buf[i];
+        if (ch == EOF) {
+            return true; // End of file
+        }
+        else {
+            fputc(ch, fp); // Write the character to the file
+        }
+    }
+    return false;
+}
+
+void receiveData(SOCKET clientSocket, sockaddr_in addr_con, const std::string& fileName) {
+    int addrlen = sizeof(addr_con);
+
+    // Open the file for writing in binary mode
+    FILE* fp;
+    errno_t err = fopen_s(&fp, fileName.c_str(), "wb");
+    if (err != 0 || fp == NULL) {
+        std::cerr << "Failed to open file for writing: " << fileName << std::endl;
+        return;
+    }
+
+    std::cout << "Receiving file: " << fileName << " ..." << std::endl;
+
+    while (true) {
+        int nBytes = recvfrom(clientSocket, net_buf, NET_BUF_SIZE, sendrecvflag, (struct sockaddr*)&addr_con, &addrlen);
+        if (nBytes <= 0) {
+            break; // Connection closed or error
+        }
+        fwrite(net_buf, 1, nBytes, fp); // Write only the received bytes
+    }
+
+    fclose(fp);
+    std::cout << "File downloaded successfully: " << fileName << std::endl;
+}
 bool parseEchoCommand(const std::string& command, std::string& ip, uint16_t& port, std::string& message) {
     std::istringstream iss(command);
     std::string cmd;
@@ -234,6 +283,7 @@ int main(int argc, char* argv[]) {
      */
     std::thread send_thread([&]() {
         while (running) {
+            sockaddr_in addr_con;
             // Get user input
             std::getline(std::cin, text);
 
@@ -252,63 +302,81 @@ int main(int argc, char* argv[]) {
                 break;
             }
             else if (text == "/l") {
-                unsigned char listUsersCommand = CMDID::REQ_LISTUSERS; // Assuming REQ_LISTUSERS is defined correctly
-                int bytesSent = send(clientSocket, reinterpret_cast<const char*>(&listUsersCommand), sizeof(listUsersCommand), 0);
-                if (bytesSent == SOCKET_ERROR) {
+                unsigned char listFilesCommand = CMDID::REQ_LISTFILES;
+                int bytesSent = send(clientSocket, reinterpret_cast<const char*>(&listFilesCommand), sizeof(listFilesCommand), 0);
 
+                if (bytesSent == SOCKET_ERROR) {
+                    std::cerr << "Failed to send list files request: " << WSAGetLastError() << std::endl;
                     break;
+                }
+
+                // Receiving response
+                constexpr size_t BUFFER_SIZE = 4096; // Increase buffer size
+                char buffer[BUFFER_SIZE];
+
+                int bytesReceived = recv(clientSocket, buffer, BUFFER_SIZE, 0);
+                if (bytesReceived == SOCKET_ERROR) {
+                    std::cerr << "Failed to receive file list: " << WSAGetLastError() << std::endl;
+                    break;
+                }
+
+                if (buffer[0] == RSP_LISTFILES) {
+                    uint16_t numFiles;
+                    memcpy(&numFiles, buffer + 1, sizeof(numFiles));
+                    numFiles = ntohs(numFiles);
+
+                    size_t offset = 1 + sizeof(numFiles);
+                    std::cout << "==========RECV START==========\nFiles:" << std::endl;
+
+                    for (int i = 0; i < numFiles; ++i) {
+                        uint16_t fileNameLength;
+                        memcpy(&fileNameLength, buffer + offset, sizeof(fileNameLength));
+                        fileNameLength = ntohs(fileNameLength);
+                        offset += sizeof(fileNameLength);
+
+                        std::string fileName(buffer + offset, fileNameLength);
+                        offset += fileNameLength;
+
+                        std::cout << fileName << std::endl;
+                    }
+
+                    std::cout << "==========RECV END==========" << std::endl;
                 }
             }
-            else if (text.substr(0, 2) == "/e") {
-                // Handle echo command...
-                std::string ip;
-                uint16_t port;
-                std::string message;
-                if (text.size() > 3 && text[2] == ' ') {
-                    if (parseEchoCommand(text, ip, port, message)) {
-                        std::vector<unsigned char> packet;
-                        // Construct the packet with REQ_ECHO, IP, port, and message
-                        // REQ_ECHO should be defined appropriately in your CMDID enum
-                        packet.push_back(REQ_ECHO);
+            else if (text.substr(0, 2) == "/d") {
+                std::istringstream iss(text);
+                std::string cmd, clientAddr, fileName;
 
-                        // Include the target IP addressl
-                        in_addr ip_addr;
-                        inet_pton(AF_INET, ip.c_str(), &ip_addr);
-                        uint32_t ip_network = ip_addr.s_addr;
-                        packet.insert(packet.end(), reinterpret_cast<unsigned char*>(&ip_network), reinterpret_cast<unsigned char*>(&ip_network) + sizeof(ip_network));
+                iss >> cmd >> clientAddr >> fileName; // Extract the 3 arguments
 
-                        // Include the target port
-                        uint16_t port_network = htons(port);
-                        packet.insert(packet.end(), reinterpret_cast<unsigned char*>(&port_network), reinterpret_cast<unsigned char*>(&port_network) + sizeof(port_network));
-
-                        // Include the message length and message
-                        uint32_t message_length = htonl(static_cast<uint32_t>(message.size()));
-                        packet.insert(packet.end(), reinterpret_cast<unsigned char*>(&message_length), reinterpret_cast<unsigned char*>(&message_length) + sizeof(message_length));
-                        packet.insert(packet.end(), message.begin(), message.end());
-                        // Debug output
-                       // std::cout << "Sending to " << ip << ":" << port << " with message: " << message << std::endl;
-
-                        // Send the packet
-                        send(clientSocket, reinterpret_cast<const char*>(packet.data()), packet.size(), 0);
-
-
-                    }
-                    else {
-                        std::cout << "==========RECV START==========" << std::endl;
-                        std::cout << "Echo error" << std::endl;
-                        std::cout << "==========RECV END==========" << std::endl;
-                    }
+                if (cmd != "/d" || clientAddr.empty() || fileName.empty()) {
+                    std::cerr << "Invalid format. Usage: /d <IP>:<Port> <Filename>" << std::endl;
+                    continue;
                 }
 
-                else {
-                    shutdown(clientSocket, SD_SEND); // Optional but gracefully shuts down sending
-                    closesocket(clientSocket);
-                    WSACleanup();
-                    //std::cerr << "disconnecting..." << std::endl;
-                    running = false;
-                    break;
+                char net_buf[NET_BUF_SIZE];
+                memset(net_buf, 0, NET_BUF_SIZE);
+
+                // Set the command ID in the buffer first
+                net_buf[0] = static_cast<unsigned char>(REQ_DOWNLOAD);
+
+                // Copy the filename into the buffer after the command ID
+                strncpy_s(net_buf + 1, NET_BUF_SIZE - 1, fileName.c_str(), NET_BUF_SIZE - 2); 
+
+                // Send file request to the server
+                if (sendto(clientSocket, net_buf, NET_BUF_SIZE, sendrecvflag,
+                    (struct sockaddr*)&addr_con, sizeof(addr_con)) == SOCKET_ERROR) {
+                    std::cerr << "Send failed: " << WSAGetLastError() << std::endl;
+                    continue;
                 }
 
+                std::cout << "Downloading file: " << fileName << " from " << clientAddr << std::endl;
+
+                // Start a thread to receive data and save it to a file
+                std::thread receiverThread(receiveData, clientSocket, addr_con, fileName);
+                receiverThread.join();
+
+                std::cout << "-------------------------------" << std::endl;
             }
             else
             {
@@ -354,104 +422,25 @@ int main(int argc, char* argv[]) {
             CMDID commandId = static_cast<CMDID>(buffer[0]);
             //std::cout << "Command ID: " << static_cast<unsigned>(commandId) << "\n";
 
-            if (commandId == RSP_LISTUSERS)
+            if (commandId == RSP_LISTFILES)
             {
-                std::cout << "==========RECV START==========\nUsers:" << std::endl;
-                uint16_t numUsers;
-                memcpy(&numUsers, buffer + 1, sizeof(numUsers));
-                numUsers = ntohs(numUsers); // Convert from network byte order to host byte order
+                std::cout << "==========RECV START==========\nFiles:" << std::endl;
+                uint16_t numFiles;
+                memcpy(&numFiles, buffer + 1, sizeof(numFiles));
+                numFiles = ntohs(numFiles); // Convert from network byte order to host byte order
 
+                size_t offset = 1 + sizeof(numFiles);
+                for (int i = 0; i < numFiles; ++i) {
+                    uint16_t fileNameLength;
+                    memcpy(&fileNameLength, buffer + offset, sizeof(fileNameLength));
+                    fileNameLength = ntohs(fileNameLength);
+                    offset += sizeof(fileNameLength);
 
-                size_t offset = 1 + sizeof(numUsers);
-                for (int i = 0; i < numUsers; ++i) {
-                    uint32_t ipAddr;
-                    memcpy(&ipAddr, buffer + offset, sizeof(ipAddr));
-                    offset += sizeof(ipAddr);
+                    std::string fileName(buffer + offset, fileNameLength);
+                    offset += fileNameLength;
 
-                    uint16_t port;
-                    memcpy(&port, buffer + offset, sizeof(port));
-                    port = ntohs(port); // Convert port to host byte order
-                    offset += sizeof(port);
-
-                    // Convert IP address to string
-                    struct in_addr ip_addr_struct;
-                    ip_addr_struct.s_addr = ipAddr;
-                    char str_ip[INET_ADDRSTRLEN];
-                    inet_ntop(AF_INET, &ip_addr_struct, str_ip, INET_ADDRSTRLEN);
-
-                    std::cout << str_ip << ":" << port << std::endl;
+                    std::cout << fileName << std::endl;
                 }
-                std::cout << "==========RECV END==========" << std::endl;
-            }
-            else if (commandId == RSP_ECHO)
-            {
-                // Extract the source IP address
-                uint32_t ipAddr;
-                std::memcpy(&ipAddr, buffer + 1, sizeof(ipAddr));
-                struct in_addr ip_addr_struct;
-                ip_addr_struct.s_addr = ipAddr;
-                char str_ip[INET_ADDRSTRLEN];
-                inet_ntop(AF_INET, &ip_addr_struct, str_ip, INET_ADDRSTRLEN);
-
-                // Extract the source port
-                uint16_t port;
-                std::memcpy(&port, buffer + 5, sizeof(port));
-                port = ntohs(port); // Convert port to host byte order
-
-                // Extract the message length
-                uint32_t message_length;
-                std::memcpy(&message_length, buffer + 7, sizeof(message_length));
-                message_length = ntohl(message_length); // Convert to host byte order
-
-                // Extract the message
-                std::string message(buffer + 11, message_length);
-
-                std::cout << "==========RECV START==========" << std::endl;
-                std::cout << str_ip << ":" << port << std::endl;
-                std::cout << message << std::endl;
-                std::cout << "==========RECV END==========" << std::endl;
-            }
-            else if (commandId == REQ_ECHO) {
-                // Extract the source IP address
-                std::vector<unsigned char> packet;
-                packet.push_back(RSP_ECHO);
-                uint32_t ipAddr;
-                std::memcpy(&ipAddr, buffer + 1, sizeof(ipAddr));
-                struct in_addr ip_addr_struct;
-                ip_addr_struct.s_addr = ipAddr;
-                char str_ip[INET_ADDRSTRLEN];
-                inet_ntop(AF_INET, &ip_addr_struct, str_ip, INET_ADDRSTRLEN);
-
-                // Extract the source port
-                uint16_t port;
-                std::memcpy(&port, buffer + 5, sizeof(port));
-                port = ntohs(port); // Convert port to host byte order
-
-                // Extract the message length
-                uint32_t message_length;
-                std::memcpy(&message_length, buffer + 7, sizeof(message_length));
-                message_length = ntohl(message_length); // Convert to host byte order
-
-                // Extract the message
-                std::string message(buffer + 11, message_length);
-
-                std::cout << "==========RECV START==========" << std::endl;
-                std::cout << str_ip << ":" << port << std::endl;
-                std::cout << message << std::endl;
-                std::cout << "==========RECV END==========" << std::endl;
-                packet.insert(packet.end(), reinterpret_cast<unsigned char*>(&ip_addr_struct), reinterpret_cast<unsigned char*>(&ip_addr_struct) + sizeof(ip_addr_struct));
-                uint16_t port_network = htons(port);
-                packet.insert(packet.end(), reinterpret_cast<unsigned char*>(&port_network), reinterpret_cast<unsigned char*>(&port_network) + sizeof(port_network));
-                uint32_t messagelength = htonl(static_cast<uint32_t>(message.size()));
-                packet.insert(packet.end(), reinterpret_cast<unsigned char*>(&messagelength), reinterpret_cast<unsigned char*>(&messagelength) + sizeof(messagelength));
-                packet.insert(packet.end(), message.begin(), message.end());
-                // Send the packet
-                send(clientSocket, reinterpret_cast<const char*>(packet.data()), packet.size(), 0);
-
-            }
-            else if (commandId == ECHO_ERROR) {
-                std::cout << "==========RECV START==========" << std::endl;
-                std::cout << "Echo error" << std::endl;
                 std::cout << "==========RECV END==========" << std::endl;
             }
 

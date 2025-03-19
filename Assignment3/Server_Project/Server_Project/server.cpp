@@ -30,7 +30,7 @@ prior written consent of DigiPen Institute of Technology is prohibited.
 // Alternatively, we could add this file to the linker command-line parameters,
 // but including it in the source code simplifies the configuration.
 #pragma comment(lib, "ws2_32.lib")
-
+#include <sstream>  
 #include <iostream>			// cout, cerr
 #include <string>			// string
 #include <vector>
@@ -50,14 +50,16 @@ std::vector<std::pair<SOCKET, std::pair<std::string, std::string>>> connectedCli
 enum CMDID {
 	UNKNOWN = (unsigned char)0x0,
 	REQ_QUIT = (unsigned char)0x1,
-	REQ_ECHO = (unsigned char)0x2,
-	RSP_ECHO = (unsigned char)0x3,
-	REQ_LISTUSERS = (unsigned char)0x4,
-	RSP_LISTUSERS = (unsigned char)0x5,
+	REQ_DOWNLOAD = (unsigned char)0x2,
+	RSP_DOWNLOAD = (unsigned char)0x3,
+	REQ_LISTFILES = (unsigned char)0x4,
+	RSP_LISTFILES = (unsigned char)0x5,
 	CMD_TEST = (unsigned char)0x20,
-	ECHO_ERROR = (unsigned char)0x30
+	DOWNLOAD_ERROR = (unsigned char)0x30
 };
-
+#define NET_BUF_SIZE 100
+#define sendrecvflag 0
+#define nofile "File Not Found!"
 static std::mutex _stdoutMutex;
 /**
  * @class TaskQueue
@@ -72,6 +74,19 @@ static std::mutex _stdoutMutex;
  * @tparam TAction Type of the action to be performed on each task.
  * @tparam TOnDisconnect Type of the action to be performed upon disconnection.
  */
+void clearBuf(char* b) {
+	memset(b, '\0', NET_BUF_SIZE);
+}
+
+int sendFile(FILE* fp, char* buf, int bufSize) {
+	size_t bytesRead = fread(buf, 1, bufSize, fp);
+
+	if (bytesRead > 0) {
+		return static_cast<int>(bytesRead); // Return actual bytes read
+	}
+
+	return 0; // End of file
+}
 template <typename TItem, typename TAction, typename TOnDisconnect>
 class TaskQueue {
 public:
@@ -552,228 +567,100 @@ bool execute(SOCKET clientSocket)
 		std::this_thread::sleep_for(5000ms); // Delay for 5 seconds
 #endif
 		CMDID commandId = static_cast<CMDID>(buffer[0]);
-
+		char net_buf[NET_BUF_SIZE];
+		sockaddr_in client_addr;
+		int client_addrlen = sizeof(client_addr);
 		// Handle REQ_LISTUSERS command
-		if (commandId == REQ_LISTUSERS) {
-
-			// Start building the response message
+		if (commandId == REQ_LISTFILES) {
 			std::vector<unsigned char> response;
-			response.push_back(RSP_LISTUSERS);  // Command ID for RSP_LISTUSERS
+			response.push_back(RSP_LISTFILES);  // Command ID for response
 
-			// Add the number of users to the response (2 bytes, in network byte order)
-			uint16_t numUsers = htons(static_cast<uint16_t>(connectedClients.size()));
-			response.insert(response.end(), (unsigned char*)&numUsers, (unsigned char*)&numUsers + sizeof(numUsers));
+			std::vector<std::string> fileList;
+			WIN32_FIND_DATAA findFileData;
+			HANDLE hFind = FindFirstFileA("*.*", &findFileData);
 
-			// Add each user's IP address and port number to the response
-			for (const auto& client : connectedClients) {
-				// Assuming 'client' is a pair: <SOCKET, pair<string, string>>
-				const auto& [clientSocket, clientInfo] = client;
-				const auto& [ip, port] = clientInfo;
-
-				in_addr ipAddr;
-				inet_pton(AF_INET, ip.c_str(), &ipAddr); // Convert string IP to binary form
-				uint32_t ipNetworkOrder = (ipAddr.s_addr); // Ensure IP is in network byte order
-				response.insert(response.end(), (unsigned char*)&ipNetworkOrder, (unsigned char*)&ipNetworkOrder + sizeof(ipNetworkOrder));
-
-				uint16_t portNumber = static_cast<uint16_t>(std::stoi(port));
-				uint16_t portNetworkOrder = htons(portNumber); // Ensure port is in network byte order
-				response.insert(response.end(), (unsigned char*)&portNetworkOrder, (unsigned char*)&portNetworkOrder + sizeof(portNetworkOrder));
-			}
-			/*std::cout << "Sending message: ";
-			for (unsigned char c : response) {
-				std::cout << std::hex << static_cast<int>(c) << " ";
-			}
-			std::cout << std::dec << "\n";*/
-#ifdef DEBUG_ASSIGNMENT2_TEST
-			std::this_thread::sleep_for(5000ms); // Delay for 5 seconds
-#endif
-			// Send the response back to the client
-			send(clientSocket, (char*)response.data(), response.size(), 0);
-		}
-
-		else if (commandId == REQ_ECHO) {
-
-			// Extract destination IP and port from the message
-			// Assume buffer[1] to buffer[4] contain the destination IP
-			// and buffer[5] to buffer[6] contain the destination port
-			uint32_t destIP;
-			uint16_t destPort;
-			std::memcpy(&destIP, buffer + 1, sizeof(destIP));
-			std::memcpy(&destPort, buffer + 5, sizeof(destPort));
-			destPort = ntohs(destPort);
-			in_addr ipAddrStruct;
-			ipAddrStruct.s_addr = destIP; // destIP should already be in network byte order
-			inet_ntop(AF_INET, &destIP, ipStr, INET_ADDRSTRLEN);
-
-			// Extract the message text
-			// Assuming buffer[7] to buffer[10] contain the text length
-			uint32_t textLength;
-			std::memcpy(&textLength, buffer + 7, sizeof(textLength));
-			textLength = ntohl(textLength); // Convert to host byte order
-			std::string messageText(buffer + 11, textLength); // Extract the text
-			//std::cout << ipStr << ":" << destPort << std::endl;
-			// Find the target client socket using the IP and port
-			SOCKET targetClientSocket = INVALID_SOCKET;
-			for (const auto& client : connectedClients) {
-				if (client.second.first == ipStr && std::stoi(client.second.second) == destPort) {
-					targetClientSocket = client.first;
-					break;
-				}
-			}
-
-			// If the target client is found, forward the message
-			if (targetClientSocket != INVALID_SOCKET) {
-				// Found the target client socket, now forward the message
-				// Construct the message to send, beginning with the command ID for RSP_ECHO
-
-				std::vector<unsigned char> messageToSend;
-				std::vector<unsigned char> messageToBack;
-
-				sockaddr_in sourceAddr;
-				int addrLen = sizeof(sourceAddr);
-
-				uint32_t sourceIP; // Should be in network byte order
-				uint16_t sourcePort; // Should be in network byte order
-				// ... code to set sourceIP and sourcePort based on the clientSocket ...
-				if (getpeername(clientSocket, (sockaddr*)&sourceAddr, &addrLen) == 0) {
-					char sourceIPStr[INET_ADDRSTRLEN];
-					// inet_ntop is only used for logging, not needed for message construction
-					inet_ntop(AF_INET, &(sourceAddr.sin_addr), sourceIPStr, INET_ADDRSTRLEN);
-
-					sourceIP = sourceAddr.sin_addr.s_addr; // This is already in network byte order
-					sourcePort = sourceAddr.sin_port; // This is already in network byte order
-
-					messageToSend.push_back(REQ_ECHO); // Command ID
-					messageToSend.insert(messageToSend.end(), (unsigned char*)&sourceIP, (unsigned char*)&sourceIP + sizeof(sourceIP));
-					messageToSend.insert(messageToSend.end(), (unsigned char*)&sourcePort, (unsigned char*)&sourcePort + sizeof(sourcePort));
-
-					// Convert text length back to network byte order for sending
-					uint32_t textLengthNetworkOrder = htonl(textLength);
-					messageToSend.insert(messageToSend.end(), (unsigned char*)&textLengthNetworkOrder, (unsigned char*)&textLengthNetworkOrder + sizeof(textLengthNetworkOrder));
-					messageToSend.insert(messageToSend.end(), messageText.begin(), messageText.end());
-					destPort = htons(destPort);
-
-					/*	std::cout << "Sending message: ";
-							for (unsigned char c : messageToSend) {
-								std::cout << std::hex << static_cast<int>(c) << " ";
-							}
-							std::cout << std::dec << "\n";*/
-					std::cout << "==========RECV START==========" << std::endl;
-					std::cout << sourceIPStr << ":" << htons(sourcePort) << std::endl;
-					std::cout << messageText << std::endl;
-					std::cout << "==========RECV END==========" << std::endl;
-					// Send the constructed message to the target client socket
-#ifdef DEBUG_ASSIGNMENT2_TEST
-					std::this_thread::sleep_for(5000ms); // Delay for 5 seconds
-#endif
-					const int bytesSent = send(targetClientSocket, (char*)messageToSend.data(), messageToSend.size(), 0);
-
-				}
-				else {
-					// If the target client is not found, send an ECHO_ERROR response
-					//std::cout << "IP and Port: " << destPort << std::endl;
-					unsigned char errorResponse[] = { ECHO_ERROR };
-					send(clientSocket, (char*)errorResponse, sizeof(errorResponse), 0);
-				}
-
+			if (hFind == INVALID_HANDLE_VALUE) {
+				std::cerr << "Failed to list files." << std::endl;
+				uint16_t zeroFiles = htons(0);
+				response.insert(response.end(), reinterpret_cast<unsigned char*>(&zeroFiles),
+					reinterpret_cast<unsigned char*>(&zeroFiles) + sizeof(zeroFiles));
 			}
 			else {
-				// If the target client is not found, send an ECHO_ERROR response
-				//std::cout << "IP and Port: " << destPort << std::endl;
-				unsigned char errorResponse[] = { ECHO_ERROR };
-				send(clientSocket, (char*)errorResponse, sizeof(errorResponse), 0);
+				do {
+					if (!(findFileData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+						std::string fileName(findFileData.cFileName);
+						fileList.push_back(fileName);
+					}
+				} while (FindNextFileA(hFind, &findFileData) != 0);
+				FindClose(hFind);
+
+				uint16_t numFiles = htons(static_cast<uint16_t>(fileList.size()));
+				response.insert(response.end(), reinterpret_cast<unsigned char*>(&numFiles),
+					reinterpret_cast<unsigned char*>(&numFiles) + sizeof(numFiles));
+
+				for (const auto& file : fileList) {
+					uint16_t fileNameLength = htons(static_cast<uint16_t>(file.length()));
+					response.insert(response.end(), reinterpret_cast<unsigned char*>(&fileNameLength),
+						reinterpret_cast<unsigned char*>(&fileNameLength) + sizeof(fileNameLength));
+					response.insert(response.end(), file.begin(), file.end());
+				}
 			}
 
+			send(clientSocket, reinterpret_cast<char*>(response.data()), static_cast<int>(response.size()), 0);
 		}
-		else if (commandId == RSP_ECHO) {
+		else if (commandId == REQ_DOWNLOAD) {
+			std::vector<unsigned char> response;
+			response.push_back(RSP_DOWNLOAD);  // Correct Command ID for response
+			std::cout << "\nProcessing download request..." << std::endl;
 
-			// Extract destination IP and port from the message
-			// Assume buffer[1] to buffer[4] contain the destination IP
-			// and buffer[5] to buffer[6] contain the destination port
-			uint32_t destIP;
-			uint16_t destPort;
-			std::memcpy(&destIP, buffer + 1, sizeof(destIP));
-			std::memcpy(&destPort, buffer + 5, sizeof(destPort));
-			destPort = ntohs(destPort);
-			in_addr ipAddrStruct;
-			ipAddrStruct.s_addr = destIP; // destIP should already be in network byte order
-			inet_ntop(AF_INET, &destIP, ipStr, INET_ADDRSTRLEN);
+			// Receive command + filename from client
+			//clearBuf(net_buf);
+			int nBytes = recvfrom(clientSocket, net_buf, NET_BUF_SIZE, sendrecvflag,
+				(struct sockaddr*)&client_addr, &client_addrlen);
 
-			// Extract the message text
-			// Assuming buffer[7] to buffer[10] contain the text length
-			uint32_t textLength;
-			std::memcpy(&textLength, buffer + 7, sizeof(textLength));
-			textLength = ntohl(textLength); // Convert to host byte order
-			std::string messageText(buffer + 11, textLength); // Extract the text
-			//std::cout << ipStr << ":" << destPort << std::endl;
-			// Find the target client socket using the IP and port
-			SOCKET targetClientSocket = INVALID_SOCKET;
-			for (const auto& client : connectedClients) {
-				if (client.second.first == ipStr && std::stoi(client.second.second) == destPort) {
-					targetClientSocket = client.first;
-					break;
-				}
+			if (nBytes == SOCKET_ERROR) {
+				std::cerr << "Receive failed: " << WSAGetLastError() << std::endl;
+				return false;
 			}
 
-			// If the target client is found, forward the message
-			if (targetClientSocket != INVALID_SOCKET) {
-				// Found the target client socket, now forward the message
-				// Construct the message to send, beginning with the command ID for RSP_ECHO
+			// Extract Command ID (first byte)
+			CMDID receivedCommand = static_cast<CMDID>(net_buf[0]);
 
-				std::vector<unsigned char> messageToSend;
-				//std::vector<unsigned char> messageToBack;
+			// Extract Filename (everything after first byte)
+			std::string fileName(net_buf + 1);
 
-				sockaddr_in sourceAddr;
-				int addrLen = sizeof(sourceAddr);
+			std::cout << "Command Received: " << static_cast<int>(receivedCommand) << std::endl;
+			std::cout << "Requested File: " << fileName << std::endl;
 
-				uint32_t sourceIP; // Should be in network byte order
-				uint16_t sourcePort; // Should be in network byte order
-				// ... code to set sourceIP and sourcePort based on the clientSocket ...
-				if (getpeername(clientSocket, (sockaddr*)&sourceAddr, &addrLen) == 0) {
-					char sourceIPStr[INET_ADDRSTRLEN];
-					// inet_ntop is only used for logging, not needed for message construction
-					inet_ntop(AF_INET, &(sourceAddr.sin_addr), sourceIPStr, INET_ADDRSTRLEN);
-
-					sourceIP = sourceAddr.sin_addr.s_addr; // This is already in network byte order
-					sourcePort = sourceAddr.sin_port; // This is already in network byte order
-
-					messageToSend.push_back(RSP_ECHO); // Command ID
-					messageToSend.insert(messageToSend.end(), (unsigned char*)&sourceIP, (unsigned char*)&sourceIP + sizeof(sourceIP));
-					messageToSend.insert(messageToSend.end(), (unsigned char*)&sourcePort, (unsigned char*)&sourcePort + sizeof(sourcePort));
-
-					// Convert text length back to network byte order for sending
-					uint32_t textLengthNetworkOrder = htonl(textLength);
-					messageToSend.insert(messageToSend.end(), (unsigned char*)&textLengthNetworkOrder, (unsigned char*)&textLengthNetworkOrder + sizeof(textLengthNetworkOrder));
-					messageToSend.insert(messageToSend.end(), messageText.begin(), messageText.end());
-					destPort = htons(destPort);
-
-					// Send the constructed message to the target client socket
-#ifdef DEBUG_ASSIGNMENT2_TEST
-					std::this_thread::sleep_for(5000ms); // Delay for 5 seconds
-#endif
-					const int bytesSent = send(targetClientSocket, (char*)messageToSend.data(), messageToSend.size(), 0);
-
-				}
-				else {
-#ifdef DEBUG_ASSIGNMENT2_TEST
-					std::this_thread::sleep_for(5000ms); // Delay for 5 seconds
-#endif
-					unsigned char errorResponse[] = { ECHO_ERROR };
-					send(clientSocket, (char*)errorResponse, sizeof(errorResponse), 0);
-				}
-
+			// Open the file in binary mode
+			FILE* fp;
+			errno_t err = fopen_s(&fp, fileName.c_str(), "rb");
+			if (err != 0 || fp == NULL) {
+				std::cerr << "File open failed!" << std::endl;
+				strcpy_s(net_buf, NET_BUF_SIZE, nofile);
+				net_buf[strlen(nofile)] = EOF; // Mark end of file
+				sendto(clientSocket, net_buf, NET_BUF_SIZE, sendrecvflag,
+					(struct sockaddr*)&client_addr, client_addrlen);
 			}
 			else {
-				// If the target client is not found, send an ECHO_ERROR response
-				//std::cout << "IP and Port: " << destPort << std::endl;
-#ifdef DEBUG_ASSIGNMENT2_TEST
-				std::this_thread::sleep_for(5000ms); // Delay for 5 seconds
-#endif
-				unsigned char errorResponse[] = { ECHO_ERROR };
-				send(clientSocket, (char*)errorResponse, sizeof(errorResponse), 0);
-			}
+				std::cout << "File successfully opened!" << std::endl;
 
+				// Send file data
+				while (true) {
+					clearBuf(net_buf); // Clear buffer before reading
+					int bytesRead = sendFile(fp, net_buf, NET_BUF_SIZE);
+					if (bytesRead <= 0) {
+						break; // End of file or error
+					}
+
+					sendto(clientSocket, net_buf, bytesRead, sendrecvflag,
+						(struct sockaddr*)&client_addr, client_addrlen);
+				}
+
+				fclose(fp);
+			}
 		}
+
 		else if (commandId == REQ_QUIT) {
 			removeDisconnectedClient(clientSocket);
 
